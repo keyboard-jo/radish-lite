@@ -1,8 +1,14 @@
 #pragma once
 #include <string>
 #include <unordered_map>
+#include <queue>
 #include <chrono>
 #include <optional>
+#include <mutex>
+#include <shared_mutex>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
 
 
 struct CacheEntry {
@@ -10,12 +16,35 @@ struct CacheEntry {
     std::chrono::time_point<std::chrono::steady_clock> expiresAt;
 };
 
+struct ExpiryNode {
+    std::chrono::time_point<std::chrono::steady_clock> expiry;
+    std::string key;
+
+    bool operator>(const ExpiryNode& other) const {
+        return expiry > other.expiry;
+    }
+};
+
 class KeyValueStore {
     private:
         std::unordered_map<std::string, CacheEntry> store;
+        std::priority_queue<ExpiryNode, std::vector<ExpiryNode>, std::greater<ExpiryNode>> pq;
+        std::mutex store_mtx;
+
+        std::thread worker;
+        std::atomic<bool> running;
+        std::condition_variable cv;
+        std::mutex cv_mutex;
+
+        void pruneLoop();
 
     public:
+        KeyValueStore();
+        ~KeyValueStore();
+
         void set(const std::string& key, const std::string& value, int ttlSeconds);
 
         std::optional<std::string> get(const std::string& key);
+
+        void prune();
 };
