@@ -29,7 +29,7 @@ class KeyValueStore {
     private:
         std::unordered_map<std::string, CacheEntry> store;
         std::priority_queue<ExpiryNode, std::vector<ExpiryNode>, std::greater<ExpiryNode>> pq;
-        std::mutex store_mtx;
+        std::shared_mutex store_mtx;
 
         std::thread worker;
         std::atomic<bool> running;
@@ -45,6 +45,8 @@ class KeyValueStore {
         void set(const std::string& key, const std::string& value, int ttlSeconds);
 
         std::optional<std::string> get(const std::string& key);
+
+        std::optional<std::string> peek(const std::string& key);
 
         void prune();
 };

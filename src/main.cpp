@@ -7,7 +7,7 @@ int main(){
     std::string line;
 
     std::cout << "Radish-Lite Engine Initialized.\n";
-    std::cout << "Commands: SET <key> <val> <ttl_sec> | GET <key> | EXIT\n\n";
+    std::cout << "Commands: SET <key> <val> <ttl_sec> | GET <key> | PEEK <key> | EXIT\n\n";
 
     while (true) {
         std::cout << "radish> ";
@@ -45,6 +45,20 @@ int main(){
                 }
             } else {
                 std::cout << "ERR: Usage: GET <key>\n";
+            }
+        }
+        else if (command == "PEEK" || command == "peek") {
+            std::string key;
+            if (ss >> key) {
+                auto val = kv.peek(key);
+
+                if (val.has_value()) {
+                    std::cout << "\"" << val.value() << "\"\n";
+                } else {
+                    std::cout << "(nil)\n";
+                }
+            } else {
+                std::cout << "ERR: Usage: PEEK <key>";
             }
         } 
         else if (!command.empty()) {

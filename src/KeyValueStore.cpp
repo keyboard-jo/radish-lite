@@ -23,7 +23,11 @@ void KeyValueStore::pruneLoop() {
     while (running) {
         std::unique_lock<std::mutex> lock(cv_mutex);
 
-        cv.wait_for(lock, std::chrono::minutes(PRUNE_LOOP_WAIT_TIME_MINUTES), [this] { return !running; });
+        cv.wait_for(
+            lock, 
+            std::chrono::minutes(PRUNE_LOOP_WAIT_TIME_MINUTES), 
+            [this] { return !running; }
+        );
 
         if (running) {
             prune();
@@ -32,7 +36,7 @@ void KeyValueStore::pruneLoop() {
 }
 
 void KeyValueStore::set(const std::string& key, const std::string& value, int ttlSeconds) {
-    std::lock_guard<std::mutex> lock(store_mtx);
+    std::unique_lock<std::shared_mutex> lock(store_mtx);
 
     auto expiry = std::chrono::steady_clock::now() + std::chrono::seconds(ttlSeconds);
     store[key] = CacheEntry{value, expiry}; 
@@ -41,7 +45,7 @@ void KeyValueStore::set(const std::string& key, const std::string& value, int tt
 }
 
 std::optional<std::string> KeyValueStore::get(const std::string& key) {
-    std::lock_guard<std::mutex> lock(store_mtx);
+    std::shared_lock<std::shared_mutex> lock(store_mtx);
 
     auto it = store.find(key);
 
@@ -50,7 +54,7 @@ std::optional<std::string> KeyValueStore::get(const std::string& key) {
     }
 
     if (std::chrono::steady_clock::now() > it->second.expiresAt) {
-        store.erase(it);
+        // Skip, handle by background worker
         return std::nullopt;
     }
 
@@ -58,7 +62,7 @@ std::optional<std::string> KeyValueStore::get(const std::string& key) {
 }
 
 void KeyValueStore::prune() {
-    std::lock_guard<std::mutex> lock(store_mtx);
+    std::unique_lock<std::shared_mutex> lock(store_mtx);
     auto now = std::chrono::steady_clock::now();
 
     while (!pq.empty() && pq.top().expiry <= now) {
