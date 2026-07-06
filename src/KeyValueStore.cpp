@@ -5,8 +5,7 @@ namespace {
 }
 
 KeyValueStore::KeyValueStore()
-    : running(true) 
-    {
+    : running(true) {
         worker = std::thread(&KeyValueStore::pruneLoop, this);
     }
 
