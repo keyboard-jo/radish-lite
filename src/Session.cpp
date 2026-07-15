@@ -1,55 +1,37 @@
 #include "Session.hpp"
 
+#include <asio.hpp>
 #include <iostream>
-#include <string>
 
-Session::Session(
+asio::awaitable<void> handle_client(
     asio::ip::tcp::socket socket,
     KeyValueStore& store)
-    : socket_(std::move(socket)),
-      store_(store)
 {
-}
+    asio::streambuf buffer;
 
-void Session::start() {
-    doRead();
-}
+    try
+    {
+        for (;;)
+        {
+            co_await asio::async_read_until(
+                socket,
+                buffer,
+                '\n',
+                asio::use_awaitable);
 
-void Session::doRead() {
-    auto self = shared_from_this();
+            // Parse request
+            // Execute using store
 
-    socket_.async_read_some(
-        asio::buffer(buffer_),
+            co_await asio::async_write(
+                socket,
+                buffer,
+                asio::use_awaitable);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Connection with client lost: " << e.what() << '\n';
+    }
 
-        [this, self](std::error_code ec, std::size_t length) {
-            if (ec) {
-                std::cout << "Client disconnected: " << ec.message() << '\n';
-                return;
-            }
-
-            std::string message(buffer_.data(), length);
-
-            std::cout << "Received: " << message << '\n';
-
-            // Continue reading from this client.
-            doRead();
-        });
-}
-
-void Session::doWrite() {
-    auto self = shared_from_this();
-
-    asio::async_write(
-        socket_,
-        asio::buffer(response_),
-
-        [this, self](std::error_code ec, std::size_t /*length*/) {
-            if (ec) {
-                std::cout << "Write failed: " << ec.message() << '\n';
-                return;
-            }
-
-            // After writing, wait for the next command.
-            doRead();
-        });
+    co_return;
 }

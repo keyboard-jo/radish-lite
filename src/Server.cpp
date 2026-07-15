@@ -8,29 +8,38 @@ Server::Server(
     asio::io_context& ioContext,
     unsigned short port,
     KeyValueStore& store)
-    : acceptor_(
+    : 
+    acceptor_(
         ioContext,
-        asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)),
-    store_(store) {
-    doAccept();
+        asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)
+    ),
+    store_(store) 
+{
+    asio::co_spawn(
+        ioContext, 
+        async_main(), 
+        asio::detached
+    );
 }
 
 
-void Server::doAccept() {
-    acceptor_.async_accept(
-        [this] (std::error_code ec, asio::ip::tcp::socket socket) {
-            if (!ec) {
-                std::cout << "Client connected\n";
+asio::awaitable<void> Server::async_main() {
+    auto executor = co_await asio::this_coro::executor;
 
-                std::make_shared<Session>(
-                    std::move(socket),
-                    store_
-                )->start();
-            }
-
-
-
-            doAccept();
+    for (;;) {
+        try {
+            auto socket = co_await acceptor_.async_accept(asio::use_awaitable);
+            
+            asio::co_spawn(
+                executor, 
+                handle_client(std::move(socket), store_), 
+                asio::detached
+            );
         }
-    );
+        catch (const std::exception& e) {
+            std::cerr << "Accept failed: " << e.what() << '\n';
+        }
+    }
+
+    co_return;
 }

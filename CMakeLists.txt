@@ -6,7 +6,7 @@ add_compile_definitions(
   _WIN32_WINNT=0x0A00
 )
 
-set(CMAKE_CXX_STANDARD 17) # Ensure C++17 for <optional> and other features
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)

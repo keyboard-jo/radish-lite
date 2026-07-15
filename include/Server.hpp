@@ -11,7 +11,8 @@ class Server {
             KeyValueStore& store
         );
     private:
-        void doAccept();
+        asio::awaitable<void> async_main();
+
 
         asio::ip::tcp::acceptor acceptor_;
         KeyValueStore& store_;
