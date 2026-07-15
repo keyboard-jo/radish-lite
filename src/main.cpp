@@ -2,8 +2,8 @@
 #include <iostream>
 #include <sstream>
 
-#include "KeyValueStore.hpp"
-#include "Server.hpp"
+#include "storage/KeyValueStore.hpp"
+#include "server/Server.hpp"
 
 
 

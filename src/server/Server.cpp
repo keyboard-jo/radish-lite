@@ -1,5 +1,5 @@
-#include "Server.hpp"
-#include "Session.hpp"
+#include "server/Server.hpp"
+#include "server/Connection.hpp"
 
 #include <iostream>
 #include <memory>

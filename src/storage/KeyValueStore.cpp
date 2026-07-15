@@ -1,4 +1,4 @@
-#include "KeyValueStore.hpp"
+#include "storage/KeyValueStore.hpp"
 
 namespace {
     static constexpr int PRUNE_LOOP_WAIT_TIME_MINUTES = 1;

@@ -1,5 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
-#include "KeyValueStore.hpp"
+#include "storage/KeyValueStore.hpp"
 #include <thread>
 #include <chrono>
 

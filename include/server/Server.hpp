@@ -1,7 +1,7 @@
 #pragma once
 
 #include <asio.hpp>
-#include "KeyValueStore.hpp"
+#include "storage/KeyValueStore.hpp"
 
 class Server {
     public:
