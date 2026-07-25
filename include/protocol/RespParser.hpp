@@ -11,18 +11,23 @@
 class RespParser
 {
 public:
+    explicit RespParser(std::size_t initial_capacity = 8192); 
+
     asio::awaitable<RespValue> parse(
         asio::ip::tcp::socket& socket);
 
 private:
-    static constexpr std::size_t COMPACT_THRESHOLD = 4096;
+    static constexpr std::size_t DEFAULT_READ_CHUNK = 1024;
 
-    std::string buffer_;
-    std::size_t cursor_;
+    std::vector<char> buffer_;
+    std::size_t read_idx_ = 0;
+    std::size_t write_idx_ = 0;
 
     //
     // Buffer management
     //
+    void ensure_space(std::size_t required_bytes);
+
     asio::awaitable<void> read_until_crlf(
         asio::ip::tcp::socket& socket);
 
@@ -34,8 +39,6 @@ private:
     std::string_view unread() const noexcept;
 
     void consume(std::size_t bytes);
-
-    void compact();
 
     //
     // Parsing helpers

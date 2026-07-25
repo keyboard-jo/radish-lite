@@ -4,6 +4,31 @@
 #include <asio.hpp>
 #include <iostream>
 
+void print_resp(const RespValue& val, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    switch (val.type)
+    {
+        case RespType::SimpleString:
+            std::cout << indent << "[SimpleString] " << val.string << "\n";
+            break;
+        case RespType::Error:
+            std::cout << indent << "[Error] " << val.string << "\n";
+            break;
+        case RespType::Integer:
+            std::cout << indent << "[Integer] " << val.integer << "\n";
+            break;
+        case RespType::BulkString:
+            std::cout << indent << "[BulkString] \"" << val.string << "\"\n";
+            break;
+        case RespType::Array:
+            std::cout << indent << "[Array] size = " << val.array.size() << "\n";
+            for (const auto& elem : val.array) {
+                print_resp(elem, depth + 1);
+            }
+            break;
+    }
+}
+
 asio::awaitable<void> handle_client(
     asio::ip::tcp::socket socket,
     KeyValueStore& store)
@@ -22,9 +47,10 @@ asio::awaitable<void> handle_client(
             // 3. Execute using store
             // At this point, 'request' contains your parsed command 
             // (usually a RespType::Array of BulkStrings like ["SET", "key", "value"]).
-            // 
-            // Example execution placeholder:
-            // std::string response = execute_command(request, store);
+            
+            std::cout << "--- Received Command ---\n";
+            print_resp(request);
+            std::cout << "------------------------\n";
             
             // For now, let's mock a simple OK response so the loop completes.
             std::string mock_response = "+OK\r\n";

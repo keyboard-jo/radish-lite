@@ -1,8 +1,15 @@
 #include "protocol/RespParser.hpp"
 
+#include <algorithm>
+#include <cstring>
 #include <stdexcept>
 
 using asio::ip::tcp;
+
+RespParser::RespParser(std::size_t initial_capacity)
+    : buffer_(initial_capacity)
+{
+}
 
 asio::awaitable<RespValue> RespParser::parse(
     tcp::socket& socket)
@@ -13,61 +20,101 @@ asio::awaitable<RespValue> RespParser::parse(
 std::string_view RespParser::unread() const noexcept
 {
     return std::string_view(
-        buffer_.data() + cursor_,
-        buffer_.size() - cursor_
+        buffer_.data() + read_idx_,
+        write_idx_ - read_idx_
     );
 }
 
 void RespParser::consume(std::size_t bytes)
 {
-    cursor_ += bytes;
+    read_idx_ += bytes;
 
-    if (cursor_ >= COMPACT_THRESHOLD)
+    // Fast-path reset: If all bytes are consumed, reset indices to zero instantly.
+    if (read_idx_ == write_idx_)
     {
-        compact();
+        read_idx_ = 0;
+        write_idx_ = 0;
     }
 }
 
-void RespParser::compact()
+void RespParser::ensure_space(std::size_t required_bytes)
 {
-    if (cursor_ < COMPACT_THRESHOLD)
+    // 1. If we already have enough free space at the tail, do nothing.
+    if (buffer_.size() - write_idx_ >= required_bytes)
+    {
         return;
+    }
 
-    if (cursor_ < buffer_.size() / 2)
-        return;
+    std::size_t unread_len = write_idx_ - read_idx_;
 
-    buffer_.erase(0, cursor_);
-    cursor_ = 0;
+    // 2. Shift unread bytes to index 0 if read_idx_ > 0
+    if (read_idx_ > 0)
+    {
+        if (unread_len > 0)
+        {
+            std::memmove(buffer_.data(), buffer_.data() + read_idx_, unread_len);
+        }
+        read_idx_ = 0;
+        write_idx_ = unread_len;
+    }
+
+    // 3. If capacity is still insufficient after shift, grow the vector.
+    if (buffer_.size() - write_idx_ < required_bytes)
+    {
+        std::size_t new_capacity = std::max(buffer_.size() * 2, write_idx_ + required_bytes);
+        buffer_.resize(new_capacity);
+    }
 }
 
 asio::awaitable<void> RespParser::read_until_crlf(
     tcp::socket& socket)
 {
-    co_await asio::async_read_until(
-        socket,
-        asio::dynamic_buffer(buffer_),
-        "\r\n",
-        asio::use_awaitable);
+    while (true)
+    {
+        std::string_view view = unread();
+        if (view.find("\r\n") != std::string_view::npos)
+        {
+            co_return; // \r\n already present in unread window!
+        }
+
+        // Ensure space to receive at least DEFAULT_READ_CHUNK bytes from network
+        ensure_space(DEFAULT_READ_CHUNK);
+
+        std::size_t bytes_read = co_await socket.async_read_some(
+            asio::buffer(buffer_.data() + write_idx_, buffer_.size() - write_idx_),
+            asio::use_awaitable
+        );
+
+        if (bytes_read == 0)
+        {
+            throw std::runtime_error("Connection closed by peer while reading CRLF.");
+        }
+
+        write_idx_ += bytes_read;
+    }
 }
 
 asio::awaitable<void> RespParser::ensure_bytes(
-    asio::ip::tcp::socket& socket,
+    tcp::socket& socket,
     std::size_t bytes)
 {
-    std::size_t available =
-        buffer_.size() - cursor_;
-
-    if (available >= bytes)
+    while (write_idx_ - read_idx_ < bytes)
     {
-        co_return;
-    }
+        std::size_t needed = bytes - (write_idx_ - read_idx_);
+        ensure_space(needed);
 
-    co_await asio::async_read(
-        socket,
-        asio::dynamic_buffer(buffer_),
-        asio::transfer_exactly(
-            bytes - available),
-        asio::use_awaitable);
+        std::size_t bytes_read = co_await socket.async_read_some(
+            asio::buffer(buffer_.data() + write_idx_, buffer_.size() - write_idx_),
+            asio::use_awaitable
+        );
+
+        if (bytes_read == 0)
+        {
+            throw std::runtime_error("Connection closed by peer while fetching bulk data.");
+        }
+
+        write_idx_ += bytes_read;
+    }
 }
 
 std::int64_t RespParser::parse_integer(
@@ -193,7 +240,7 @@ asio::awaitable<RespValue> RespParser::parse_bulk_string(
 
     RespValue value;
     value.type = RespType::BulkString;
-    value.string.assign(buffer_.data(), length);
+    value.string.assign(unread().data(), length);
 
     consume(length + 2);
 

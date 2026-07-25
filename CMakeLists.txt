@@ -80,8 +80,9 @@ add_executable(
 target_link_libraries(
   tests 
   PRIVATE 
-  Catch2::Catch2WithMain 
+  Catch2::Catch2WithMain
   kvstore_lib
+  server_lib
 )
 
 include(CTest)
