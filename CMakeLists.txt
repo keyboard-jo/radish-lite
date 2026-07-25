@@ -75,6 +75,7 @@ target_link_libraries(
 add_executable(
   tests 
   tests/test_key_value_store.cpp
+  tests/test_resp_parcer.cpp
 )
 target_link_libraries(
   tests 
