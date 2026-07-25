@@ -3,6 +3,8 @@
 
 #include <iostream>
 #include <memory>
+#include <vector>
+#include <cstring>
 
 using asio::ip::tcp;
 
@@ -50,39 +52,88 @@ void print_resp(const RespValue& val, int depth = 0) {
 }
 
 asio::awaitable<void> Server::handle_client(tcp::socket socket) {
-    // 1. Instantiate the parser here so its buffer outlives a single request.
-    RespParser parser;
+    // Moved buffer responsibility directly into the connection handler
+    std::vector<char> buffer(8192);
+    std::size_t read_idx = 0;
+    std::size_t write_idx = 0;
+
+    constexpr std::size_t MAX_BUFFER_SIZE = 32 * 1024 * 1024;
 
     try
     {
         for (;;)
         {
-            // 2. Await the parsed RESP value. The parser handles all the 
-            // async socket reads internally.
-            RespValue request = co_await parser.parse(socket);
+            // 1. Try to parse from whatever data we currently have
+            std::string_view unread_view(buffer.data() + read_idx, write_idx - read_idx);
+            auto result = RespParser::parse(unread_view);
 
-            // 3. Execute using store
-            // At this point, 'request' contains your parsed command 
-            // (usually a RespType::Array of BulkStrings like ["SET", "key", "value"]).
-            
-            std::cout << "--- Received Command ---\n";
-            print_resp(request);
-            std::cout << "------------------------\n";
-            
-            // For now, let's mock a simple OK response so the loop completes.
-            std::string mock_response = "+OK\r\n";
+            if (result.value.has_value())
+            {
+                // A complete RESP value was successfully parsed!
+                read_idx += result.consumed;
 
-            // 4. Send the serialized response back to the client
-            co_await asio::async_write(
-                socket,
-                asio::buffer(mock_response),
-                asio::use_awaitable);
+                // Fast-path reset to keep buffer clean
+                if (read_idx == write_idx)
+                {
+                    read_idx = 0;
+                    write_idx = 0;
+                }
+
+                RespValue request = std::move(*result.value);
+
+                std::cout << "--- Received Command ---\n";
+                print_resp(request);
+                std::cout << "------------------------\n";
+                
+                std::string mock_response = "+OK\r\n";
+
+                co_await asio::async_write(
+                    socket,
+                    asio::buffer(mock_response),
+                    asio::use_awaitable);
+            }
+            else
+            {
+                // We need more data from the network to form a complete RESP message.
+                
+                // If we've hit the end of our vector capacity, shift or grow
+                if (write_idx == buffer.size())
+                {
+                    if (read_idx > 0)
+                    {
+                        std::size_t unread_len = write_idx - read_idx;
+                        std::memmove(buffer.data(), buffer.data() + read_idx, unread_len);
+                        read_idx = 0;
+                        write_idx = unread_len;
+                    }
+                    else
+                    {
+                        if (buffer.size() >= MAX_BUFFER_SIZE) {
+                            throw std::runtime_error("Request exceeded maximum allowed size limit.");
+                        }
+                        std::size_t new_capacity = std::min(buffer.size() * 2, MAX_BUFFER_SIZE);
+
+                        buffer.resize(new_capacity);
+                    }
+                }
+
+                // 2. Await network read
+                std::size_t bytes_read = co_await socket.async_read_some(
+                    asio::buffer(buffer.data() + write_idx, buffer.size() - write_idx),
+                    asio::use_awaitable
+                );
+
+                if (bytes_read == 0)
+                {
+                    throw std::runtime_error("Connection closed by peer.");
+                }
+
+                write_idx += bytes_read;
+            }
         }
     }
     catch (const std::exception& e)
     {
-        // This catch block handles both malformed RESP errors thrown by your parser
-        // and natural EOF (End of File) when the client disconnects.
         std::cerr << "Connection with client lost: " << e.what() << '\n';
     }
 

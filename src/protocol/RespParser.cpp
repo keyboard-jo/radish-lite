@@ -1,124 +1,121 @@
 #include "protocol/RespParser.hpp"
-
-#include <algorithm>
-#include <cstring>
 #include <stdexcept>
 
-using asio::ip::tcp;
-
-RespParser::RespParser(std::size_t initial_capacity)
-    : buffer_(initial_capacity)
+RespParser::ParseResult RespParser::parse(std::string_view data)
 {
-}
+    RespValue value;
+    std::size_t offset = 0;
 
-asio::awaitable<RespValue> RespParser::parse(
-    tcp::socket& socket)
-{
-    co_return co_await parse_value(socket);
-}
-
-std::string_view RespParser::unread() const noexcept
-{
-    return std::string_view(
-        buffer_.data() + read_idx_,
-        write_idx_ - read_idx_
-    );
-}
-
-void RespParser::consume(std::size_t bytes)
-{
-    read_idx_ += bytes;
-
-    // Fast-path reset: If all bytes are consumed, reset indices to zero instantly.
-    if (read_idx_ == write_idx_)
+    if (parse_value(data, offset, value))
     {
-        read_idx_ = 0;
-        write_idx_ = 0;
+        return { std::move(value), offset };
+    }
+
+    return { std::nullopt, 0 };
+}
+
+bool RespParser::parse_value(std::string_view data, std::size_t& offset, RespValue& out)
+{
+    if (offset >= data.size()) return false;
+
+    char type = data[offset];
+    switch (type)
+    {
+    case '+': return parse_simple_string(data, offset, out);
+    case '-': return parse_error(data, offset, out);
+    case ':': return parse_integer_value(data, offset, out);
+    case '$': return parse_bulk_string(data, offset, out);
+    case '*': return parse_array(data, offset, out);
+    default: throw std::runtime_error("Unknown RESP type.");
     }
 }
 
-void RespParser::ensure_space(std::size_t required_bytes)
+bool RespParser::parse_simple_string(std::string_view data, std::size_t& offset, RespValue& out)
 {
-    // 1. If we already have enough free space at the tail, do nothing.
-    if (buffer_.size() - write_idx_ >= required_bytes)
-    {
-        return;
-    }
+    auto cr = data.find("\r\n", offset);
+    if (cr == std::string_view::npos) return false;
 
-    std::size_t unread_len = write_idx_ - read_idx_;
+    out.type = RespType::SimpleString;
+    out.string = std::string(data.substr(offset + 1, cr - (offset + 1)));
+    
+    offset = cr + 2;
+    return true;
+}
 
-    // 2. Shift unread bytes to index 0 if read_idx_ > 0
-    if (read_idx_ > 0)
+bool RespParser::parse_error(std::string_view data, std::size_t& offset, RespValue& out)
+{
+    auto cr = data.find("\r\n", offset);
+    if (cr == std::string_view::npos) return false;
+
+    out.type = RespType::Error;
+    out.string = std::string(data.substr(offset + 1, cr - (offset + 1)));
+    
+    offset = cr + 2;
+    return true;
+}
+
+bool RespParser::parse_integer_value(std::string_view data, std::size_t& offset, RespValue& out)
+{
+    auto cr = data.find("\r\n", offset);
+    if (cr == std::string_view::npos) return false;
+
+    out.type = RespType::Integer;
+    out.integer = parse_integer(data.substr(offset + 1, cr - (offset + 1)));
+
+    offset = cr + 2;
+    return true;
+}
+
+bool RespParser::parse_bulk_string(std::string_view data, std::size_t& offset, RespValue& out)
+{
+    auto cr = data.find("\r\n", offset);
+    if (cr == std::string_view::npos) return false;
+
+    std::size_t length = static_cast<std::size_t>(
+        parse_integer(data.substr(offset + 1, cr - (offset + 1))));
+
+    // Calculate total bytes required including string length and the trailing \r\n
+    std::size_t data_start = cr + 2;
+    std::size_t total_required = data_start + length + 2;
+
+    if (data.size() < total_required) return false;
+
+    out.type = RespType::BulkString;
+    out.string = std::string(data.substr(data_start, length));
+    
+    offset = total_required;
+    return true;
+}
+
+bool RespParser::parse_array(std::string_view data, std::size_t& offset, RespValue& out)
+{
+    auto cr = data.find("\r\n", offset);
+    if (cr == std::string_view::npos) return false;
+
+    std::size_t count = static_cast<std::size_t>(
+        parse_integer(data.substr(offset + 1, cr - (offset + 1))));
+
+    std::size_t current_offset = cr + 2;
+
+    out.type = RespType::Array;
+    out.array.clear();
+    out.array.reserve(count);
+
+    for (std::size_t i = 0; i < count; ++i)
     {
-        if (unread_len > 0)
+        RespValue elem;
+        if (!parse_value(data, current_offset, elem))
         {
-            std::memmove(buffer_.data(), buffer_.data() + read_idx_, unread_len);
+            return false; // Not enough data yet to complete this array
         }
-        read_idx_ = 0;
-        write_idx_ = unread_len;
+        out.array.push_back(std::move(elem));
     }
 
-    // 3. If capacity is still insufficient after shift, grow the vector.
-    if (buffer_.size() - write_idx_ < required_bytes)
-    {
-        std::size_t new_capacity = std::max(buffer_.size() * 2, write_idx_ + required_bytes);
-        buffer_.resize(new_capacity);
-    }
+    offset = current_offset;
+    return true;
 }
 
-asio::awaitable<void> RespParser::read_until_crlf(
-    tcp::socket& socket)
-{
-    while (true)
-    {
-        std::string_view view = unread();
-        if (view.find("\r\n") != std::string_view::npos)
-        {
-            co_return; // \r\n already present in unread window!
-        }
-
-        // Ensure space to receive at least DEFAULT_READ_CHUNK bytes from network
-        ensure_space(DEFAULT_READ_CHUNK);
-
-        std::size_t bytes_read = co_await socket.async_read_some(
-            asio::buffer(buffer_.data() + write_idx_, buffer_.size() - write_idx_),
-            asio::use_awaitable
-        );
-
-        if (bytes_read == 0)
-        {
-            throw std::runtime_error("Connection closed by peer while reading CRLF.");
-        }
-
-        write_idx_ += bytes_read;
-    }
-}
-
-asio::awaitable<void> RespParser::ensure_bytes(
-    tcp::socket& socket,
-    std::size_t bytes)
-{
-    while (write_idx_ - read_idx_ < bytes)
-    {
-        std::size_t needed = bytes - (write_idx_ - read_idx_);
-        ensure_space(needed);
-
-        std::size_t bytes_read = co_await socket.async_read_some(
-            asio::buffer(buffer_.data() + write_idx_, buffer_.size() - write_idx_),
-            asio::use_awaitable
-        );
-
-        if (bytes_read == 0)
-        {
-            throw std::runtime_error("Connection closed by peer while fetching bulk data.");
-        }
-
-        write_idx_ += bytes_read;
-    }
-}
-
-std::int64_t RespParser::parse_integer(
-    std::string_view text)
+std::int64_t RespParser::parse_integer(std::string_view text)
 {
     bool negative = false;
     std::size_t i = 0;
@@ -134,7 +131,6 @@ std::int64_t RespParser::parse_integer(
     for (; i < text.size(); ++i)
     {
         char c = text[i];
-
         if (c < '0' || c > '9')
             throw std::runtime_error("Invalid integer.");
 
@@ -142,133 +138,4 @@ std::int64_t RespParser::parse_integer(
     }
 
     return negative ? -value : value;
-}
-
-asio::awaitable<RespValue> RespParser::parse_value(
-    tcp::socket& socket)
-{
-    co_await read_until_crlf(socket);
-
-    switch (unread().front())
-    {
-    case '+':
-        co_return co_await parse_simple_string(socket);
-
-    case '-':
-        co_return co_await parse_error(socket);
-
-    case ':':
-        co_return co_await parse_integer_value(socket);
-
-    case '$':
-        co_return co_await parse_bulk_string(socket);
-
-    case '*':
-        co_return co_await parse_array(socket);
-
-    default:
-        throw std::runtime_error("Unknown RESP type.");
-    }
-}
-
-asio::awaitable<RespValue> RespParser::parse_simple_string(
-    tcp::socket& socket)
-{
-    co_await read_until_crlf(socket);
-
-    auto line = unread();
-    auto cr = line.find("\r\n");
-
-    RespValue value;
-    value.type = RespType::SimpleString;
-    value.string = std::string(line.substr(1, cr - 1));
-
-    consume(cr + 2);
-
-    co_return value;
-}
-
-asio::awaitable<RespValue> RespParser::parse_error(
-    tcp::socket& socket)
-{
-    co_await read_until_crlf(socket);
-
-    auto line = unread();
-    auto cr = line.find("\r\n");
-
-    RespValue value;
-    value.type = RespType::Error;
-    value.string = std::string(line.substr(1, cr - 1));
-
-    consume(cr + 2);
-
-    co_return value;
-}
-
-asio::awaitable<RespValue> RespParser::parse_integer_value(
-    tcp::socket& socket)
-{
-    co_await read_until_crlf(socket);
-
-    auto line = unread();
-    auto cr = line.find("\r\n");
-
-    RespValue value;
-    value.type = RespType::Integer;
-    value.integer = parse_integer(
-        line.substr(1, cr - 1));
-
-    consume(cr + 2);
-
-    co_return value;
-}
-
-asio::awaitable<RespValue> RespParser::parse_bulk_string(
-    tcp::socket& socket)
-{
-    co_await read_until_crlf(socket);
-
-    auto line = unread();
-    auto cr = line.find("\r\n");
-
-    auto length = static_cast<std::size_t>(
-        parse_integer(line.substr(1, cr - 1)));
-
-    consume(cr + 2);
-
-    co_await ensure_bytes(socket, length + 2);
-
-    RespValue value;
-    value.type = RespType::BulkString;
-    value.string.assign(unread().data(), length);
-
-    consume(length + 2);
-
-    co_return value;
-}
-
-asio::awaitable<RespValue> RespParser::parse_array(
-    tcp::socket& socket)
-{
-    co_await read_until_crlf(socket);
-
-    auto line = unread();
-    auto cr = line.find("\r\n");
-
-    auto count = static_cast<std::size_t>(
-        parse_integer(line.substr(1, cr - 1)));
-
-    consume(cr + 2);
-
-    RespValue value;
-    value.type = RespType::Array;
-    value.array.reserve(count);
-
-    for (std::size_t i = 0; i < count; ++i)
-    {
-        value.array.push_back(
-            co_await parse_value(socket));
-    }
-
-    co_return value;
 }
