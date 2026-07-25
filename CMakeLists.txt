@@ -43,10 +43,9 @@ target_include_directories(
 add_library(
   server_lib 
   src/server/Server.cpp
-  src/server/Connection.cpp
   src/protocol/RespParser.cpp
   src/protocol/RespValue.cpp
-  src/commands/CommandDispatcher.cpp
+  src/command/CommandDispatcher.cpp
 )
 target_include_directories(
   server_lib
