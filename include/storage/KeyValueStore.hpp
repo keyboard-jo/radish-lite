@@ -42,7 +42,10 @@ class KeyValueStore {
         KeyValueStore();
         ~KeyValueStore();
 
-        void set(const std::string& key, const std::string& value, int ttlSeconds);
+        static constexpr int NO_EXPIRE = -1;
+        static constexpr int PRUNE_LOOP_WAIT_TIME_MINUTES = 1;
+
+        void set(const std::string& key, const std::string& value, int ttlSeconds = NO_EXPIRE);
 
         std::optional<std::string> get(const std::string& key);
 

@@ -3,6 +3,7 @@
 #include <asio.hpp>
 #include "storage/KeyValueStore.hpp"
 #include "server/ServerConfig.hpp"
+#include "command/CommandDispatcher.hpp"
 
 class Server {
 public:
@@ -19,4 +20,5 @@ private:
     asio::ip::tcp::acceptor acceptor_;
     KeyValueStore& store_;
     ServerConfig config_;
+    CommandDispatcher dispatcher_;
 };

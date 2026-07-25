@@ -1,6 +1,7 @@
 #include "server/Server.hpp"
 #include "server/ServerConfig.hpp"
 #include "protocol/RespParser.hpp"
+#include "command/CommandDispatcher.hpp"
 
 #include <iostream>
 #include <memory>
@@ -14,12 +15,10 @@ Server::Server(
     ServerConfig config,
     KeyValueStore& store)
     : 
-    acceptor_(
-        ioContext,
-        config
-    ),
+    acceptor_(ioContext, config),
     store_(store),
-    config_(std::move(config)) 
+    config_(std::move(config)),
+    dispatcher_(store_)
 {
     asio::co_spawn(
         ioContext, 
@@ -81,15 +80,11 @@ asio::awaitable<void> Server::handle_client(tcp::socket socket) {
 
                 RespValue request = std::move(*result.value);
 
-                std::cout << "--- Received Command ---\n";
-                print_resp(request);
-                std::cout << "------------------------\n";
-                
-                std::string mock_response = "+OK\r\n";
+                std::string response = dispatcher_.dispatch(request);
 
                 co_await asio::async_write(
                     socket,
-                    asio::buffer(mock_response),
+                    asio::buffer(response),
                     asio::use_awaitable);
             }
             else

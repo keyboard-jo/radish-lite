@@ -1,9 +1,5 @@
 #include "storage/KeyValueStore.hpp"
 
-namespace {
-    static constexpr int PRUNE_LOOP_WAIT_TIME_MINUTES = 1;
-}
-
 KeyValueStore::KeyValueStore()
     : running(true) {
         worker = std::thread(&KeyValueStore::pruneLoop, this);
@@ -37,10 +33,17 @@ void KeyValueStore::pruneLoop() {
 void KeyValueStore::set(const std::string& key, const std::string& value, int ttlSeconds) {
     std::unique_lock<std::shared_mutex> lock(store_mtx);
 
-    auto expiry = std::chrono::steady_clock::now() + std::chrono::seconds(ttlSeconds);
-    store[key] = CacheEntry{value, expiry}; 
+    std::chrono::steady_clock::time_point expiry;
 
-    pq.push({expiry, key});
+    if (ttlSeconds == NO_EXPIRE) {
+        expiry = std::chrono::steady_clock::time_point::max();
+    } else {
+        expiry = std::chrono::steady_clock::now() + std::chrono::seconds(ttlSeconds);
+        
+        pq.push({expiry, key});
+    }
+
+    store[key] = CacheEntry{value, expiry}; 
 }
 
 std::optional<std::string> KeyValueStore::get(const std::string& key) {
