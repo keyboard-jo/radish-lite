@@ -2,12 +2,13 @@
 
 #include <asio.hpp>
 #include "storage/KeyValueStore.hpp"
+#include "server/ServerConfig.hpp"
 
 class Server {
 public:
     Server(
         asio::io_context& ioContext,
-        unsigned short port,
+        ServerConfig config,
         KeyValueStore& store
     );
 
@@ -17,4 +18,5 @@ private:
 
     asio::ip::tcp::acceptor acceptor_;
     KeyValueStore& store_;
+    ServerConfig config_;
 };

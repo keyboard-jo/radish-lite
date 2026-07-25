@@ -1,4 +1,5 @@
 #include "server/Server.hpp"
+#include "server/ServerConfig.hpp"
 #include "protocol/RespParser.hpp"
 
 #include <iostream>
@@ -10,14 +11,15 @@ using asio::ip::tcp;
 
 Server::Server(
     asio::io_context& ioContext,
-    unsigned short port,
+    ServerConfig config,
     KeyValueStore& store)
     : 
     acceptor_(
         ioContext,
-        tcp::endpoint(tcp::v4(), port)
+        config
     ),
-    store_(store) 
+    store_(store),
+    config_(std::move(config)) 
 {
     asio::co_spawn(
         ioContext, 
@@ -56,8 +58,6 @@ asio::awaitable<void> Server::handle_client(tcp::socket socket) {
     std::vector<char> buffer(8192);
     std::size_t read_idx = 0;
     std::size_t write_idx = 0;
-
-    constexpr std::size_t MAX_BUFFER_SIZE = 32 * 1024 * 1024;
 
     try
     {
@@ -108,10 +108,10 @@ asio::awaitable<void> Server::handle_client(tcp::socket socket) {
                     }
                     else
                     {
-                        if (buffer.size() >= MAX_BUFFER_SIZE) {
+                        if (buffer.size() >= config_.max_buffer_size) {
                             throw std::runtime_error("Request exceeded maximum allowed size limit.");
                         }
-                        std::size_t new_capacity = std::min(buffer.size() * 2, MAX_BUFFER_SIZE);
+                        std::size_t new_capacity = std::min(buffer.size() * 2, config_.max_buffer_size);
 
                         buffer.resize(new_capacity);
                     }
