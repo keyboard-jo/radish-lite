@@ -10,14 +10,11 @@ KeyValueStore::~KeyValueStore() {
 }
 
 void KeyValueStore::schedule_next_eviction() {
-    if (ttl_queue_.empty()) return; // Nothing to wait for
+    if (ttl_queue_.empty()) return;
 
-    // Set the Asio timer to the deadline of the top element
     eviction_timer_.expires_at(ttl_queue_.top().expiration);
 
-    // Tell Asio to call our prune function when the time arrives
     eviction_timer_.async_wait([this](std::error_code ec) {
-        // If we canceled/rescheduled the timer, ignore this callback
         if (ec == asio::error::operation_aborted) return;
         
         prune_expired_keys();
@@ -36,7 +33,6 @@ void KeyValueStore::prune_expired_keys() {
 
         ttl_queue_.pop();
 
-        // The "Ghost Key" check using the custom HMap API
         CacheEntry lookup_key;
         lookup_key.key = top.key;
         lookup_key.node.hcode = str_hash(top.key);
@@ -46,8 +42,6 @@ void KeyValueStore::prune_expired_keys() {
             CacheEntry* entry = reinterpret_cast<CacheEntry*>(*existing);
             
             // TODO: Might not be efficient
-            // Verify the key still has the same expiration time. 
-            // If the user called SET again, the TTL might have changed or been removed.
             if (entry->expiration.has_value() && entry->expiration.value() == top.expiration) {
                 HNode* detached_node = db.detach(&lookup_key.node, entry_eq);
                 delete reinterpret_cast<CacheEntry*>(detached_node);
@@ -64,7 +58,6 @@ void KeyValueStore::clear_table(HTab& tab) {
         HNode* cur = tab.tab[i];
         while (cur) {
             HNode* next = cur->next;
-            // Safely cast back to CacheEntry to free the full object memory
             delete reinterpret_cast<CacheEntry*>(cur);
             cur = next;
         }
@@ -85,7 +78,7 @@ void KeyValueStore::set(const std::string& key, const std::string& value, std::o
     if (HNode** existing = db.lookup(&lookup_key.node, entry_eq)) {
         CacheEntry* entry = reinterpret_cast<CacheEntry*>(*existing);
         entry->value = value;
-        entry->expiration = expire_time; // Overwrite any existing TTL
+        entry->expiration = expire_time;
     } else {
         CacheEntry* new_entry = new CacheEntry();
         new_entry->key = key;
@@ -95,13 +88,9 @@ void KeyValueStore::set(const std::string& key, const std::string& value, std::o
         db.insert(&new_entry->node);
     }
 
-    // Active Eviction Setup
     if (expire_time.has_value()) {
         ttl_queue_.push({key, expire_time.value()});
         
-        // If this newly inserted key is now the closest one to expiring,
-        // we must reschedule the timer to wake up earlier.
-        // (Calling expires_at in schedule_next_eviction automatically cancels the pending wait)
         if (ttl_queue_.top().key == key && ttl_queue_.top().expiration == expire_time.value()) {
             schedule_next_eviction();
         }
@@ -120,7 +109,6 @@ std::optional<std::string> KeyValueStore::get(const std::string& key) {
 
     CacheEntry* entry = reinterpret_cast<CacheEntry*>(*from);
 
-    // Lazy Eviction Check
     if (entry->expiration.has_value() && entry->expiration.value() <= std::chrono::steady_clock::now()) {
         HNode* detached_node = db.detach(&lookup_key.node, entry_eq);
         delete reinterpret_cast<CacheEntry*>(detached_node);

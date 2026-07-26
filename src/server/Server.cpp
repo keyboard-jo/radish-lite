@@ -53,14 +53,13 @@ void print_resp(const RespValue& val, int depth = 0) {
 }
 
 asio::awaitable<void> Server::handle_client(tcp::socket socket) {
-    // Moved buffer responsibility directly into the connection handler
-    std::vector<char> buffer(8192);
+    std::vector<char> buffer(config_.default_buffer_size);
     std::size_t read_idx = 0;
     std::size_t write_idx = 0;
 
     asio::steady_timer idle_timer(socket.get_executor());
-    auto idle_timeout_duration = std::chrono::seconds(30);
-    const auto io_timeout = std::chrono::seconds(5);
+    auto idle_timeout_duration = config_.idle_timeout;
+    const auto io_timeout = config_.io_timeout;
 
     auto reset_idle_timer = [&]() {
         idle_timer.expires_after(idle_timeout_duration);
