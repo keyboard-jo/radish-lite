@@ -58,6 +58,21 @@ asio::awaitable<void> Server::handle_client(tcp::socket socket) {
     std::size_t read_idx = 0;
     std::size_t write_idx = 0;
 
+    asio::steady_timer idle_timer(socket.get_executor());
+    auto idle_timeout_duration = std::chrono::seconds(30);
+    const auto io_timeout = std::chrono::seconds(5);
+
+    auto reset_idle_timer = [&]() {
+        idle_timer.expires_after(idle_timeout_duration);
+        idle_timer.async_wait([&socket](std::error_code ec) {
+            if (!ec) {
+                socket.close();
+            }
+        });
+    };
+
+    reset_idle_timer();
+
     try
     {
         for (;;)
@@ -84,10 +99,12 @@ asio::awaitable<void> Server::handle_client(tcp::socket socket) {
 
                 std::string response = dispatcher_.dispatch(request);
 
+                reset_idle_timer();
+
                 co_await asio::async_write(
                     socket,
                     asio::buffer(response),
-                    asio::use_awaitable);
+                    asio::cancel_after(io_timeout, asio::use_awaitable));
             }
             else
             {
@@ -114,11 +131,15 @@ asio::awaitable<void> Server::handle_client(tcp::socket socket) {
                     }
                 }
 
+                reset_idle_timer();
+
                 // 2. Await network read
                 std::size_t bytes_read = co_await socket.async_read_some(
                     asio::buffer(buffer.data() + write_idx, buffer.size() - write_idx),
-                    asio::use_awaitable
+                    asio::cancel_after(io_timeout, asio::use_awaitable)
                 );
+
+                idle_timer.cancel();
 
                 if (bytes_read == 0)
                 {
