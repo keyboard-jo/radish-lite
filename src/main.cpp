@@ -13,7 +13,7 @@ int main(int argc, char* argv[]){
     ServerConfig config = ServerConfig::load_from_file(config_path);
 
     asio::io_context ioContext;
-    KeyValueStore kv;
+    KeyValueStore kv(ioContext);
 
     Server server(ioContext, config, kv);
 

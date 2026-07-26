@@ -37,6 +37,7 @@ target_include_directories(
   kvstore_lib 
   PUBLIC 
   include
+  ${asio_SOURCE_DIR}/asio/include
 )
 
 
@@ -73,9 +74,9 @@ target_link_libraries(
 )
 
 add_executable(
-  tests 
-  tests/test_key_value_store.cpp
+  tests
   tests/test_resp_parcer.cpp
+  tests/test_key_value_storage.cpp
 )
 target_link_libraries(
   tests 

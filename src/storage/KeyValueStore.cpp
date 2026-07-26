@@ -1,80 +1,144 @@
 #include "storage/KeyValueStore.hpp"
 
-KeyValueStore::KeyValueStore()
-    : running(true) {
-        worker = std::thread(&KeyValueStore::pruneLoop, this);
-    }
+
+
+KeyValueStore::KeyValueStore(asio::io_context& ic) : eviction_timer_(ic) {}
 
 KeyValueStore::~KeyValueStore() {
-    running = false;
-    cv.notify_all();
-
-    if (worker.joinable()) {
-        worker.join();
-    }
+    clear_table(db.newer);
+    clear_table(db.older);
 }
 
-void KeyValueStore::pruneLoop() {
-    while (running) {
-        std::unique_lock<std::mutex> lock(cv_mutex);
+void KeyValueStore::schedule_next_eviction() {
+    if (ttl_queue_.empty()) return; // Nothing to wait for
 
-        cv.wait_for(
-            lock, 
-            std::chrono::minutes(PRUNE_LOOP_WAIT_TIME_MINUTES), 
-            [this] { return !running; }
-        );
+    // Set the Asio timer to the deadline of the top element
+    eviction_timer_.expires_at(ttl_queue_.top().expiration);
 
-        if (running) {
-            prune();
+    // Tell Asio to call our prune function when the time arrives
+    eviction_timer_.async_wait([this](std::error_code ec) {
+        // If we canceled/rescheduled the timer, ignore this callback
+        if (ec == asio::error::operation_aborted) return;
+        
+        prune_expired_keys();
+    });
+}
+
+void KeyValueStore::prune_expired_keys() {
+    auto now = std::chrono::steady_clock::now();
+
+    while (!ttl_queue_.empty()) {
+        auto top = ttl_queue_.top();
+
+        if (top.expiration > now) {
+            break;
+        }
+
+        ttl_queue_.pop();
+
+        // The "Ghost Key" check using the custom HMap API
+        CacheEntry lookup_key;
+        lookup_key.key = top.key;
+        lookup_key.node.hcode = str_hash(top.key);
+
+        HNode** existing = db.lookup(&lookup_key.node, entry_eq);
+        if (existing) {
+            CacheEntry* entry = reinterpret_cast<CacheEntry*>(*existing);
+            
+            // TODO: Might not be efficient
+            // Verify the key still has the same expiration time. 
+            // If the user called SET again, the TTL might have changed or been removed.
+            if (entry->expiration.has_value() && entry->expiration.value() == top.expiration) {
+                HNode* detached_node = db.detach(&lookup_key.node, entry_eq);
+                delete reinterpret_cast<CacheEntry*>(detached_node);
+            }
         }
     }
+
+    schedule_next_eviction();
 }
 
-void KeyValueStore::set(const std::string& key, const std::string& value, int ttlSeconds) {
-    std::unique_lock<std::shared_mutex> lock(store_mtx);
+void KeyValueStore::clear_table(HTab& tab) {
+    if (!tab.tab) return;
+    for (size_t i = 0; i <= tab.mask; ++i) {
+        HNode* cur = tab.tab[i];
+        while (cur) {
+            HNode* next = cur->next;
+            // Safely cast back to CacheEntry to free the full object memory
+            delete reinterpret_cast<CacheEntry*>(cur);
+            cur = next;
+        }
+    }
+    tab.destroy();
+}
 
-    std::chrono::steady_clock::time_point expiry;
+void KeyValueStore::set(const std::string& key, const std::string& value, std::optional<std::chrono::milliseconds> ttl) {
+    CacheEntry lookup_key;
+    lookup_key.key = key;
+    lookup_key.node.hcode = str_hash(key);
 
-    if (ttlSeconds == NO_EXPIRE) {
-        expiry = std::chrono::steady_clock::time_point::max();
-    } else {
-        expiry = std::chrono::steady_clock::now() + std::chrono::seconds(ttlSeconds);
-        
-        pq.push({expiry, key});
+    std::optional<std::chrono::steady_clock::time_point> expire_time = std::nullopt;
+    if (ttl.has_value()) {
+        expire_time = std::chrono::steady_clock::now() + ttl.value();
     }
 
-    store[key] = CacheEntry{value, expiry}; 
+    if (HNode** existing = db.lookup(&lookup_key.node, entry_eq)) {
+        CacheEntry* entry = reinterpret_cast<CacheEntry*>(*existing);
+        entry->value = value;
+        entry->expiration = expire_time; // Overwrite any existing TTL
+    } else {
+        CacheEntry* new_entry = new CacheEntry();
+        new_entry->key = key;
+        new_entry->value = value;
+        new_entry->node.hcode = lookup_key.node.hcode;
+        new_entry->expiration = expire_time;
+        db.insert(&new_entry->node);
+    }
+
+    // Active Eviction Setup
+    if (expire_time.has_value()) {
+        ttl_queue_.push({key, expire_time.value()});
+        
+        // If this newly inserted key is now the closest one to expiring,
+        // we must reschedule the timer to wake up earlier.
+        // (Calling expires_at in schedule_next_eviction automatically cancels the pending wait)
+        if (ttl_queue_.top().key == key && ttl_queue_.top().expiration == expire_time.value()) {
+            schedule_next_eviction();
+        }
+    }
 }
 
 std::optional<std::string> KeyValueStore::get(const std::string& key) {
-    std::shared_lock<std::shared_mutex> lock(store_mtx);
+    CacheEntry lookup_key;
+    lookup_key.key = key;
+    lookup_key.node.hcode = str_hash(key);
 
-    auto it = store.find(key);
-
-    if (it == store.end()) {
+    HNode** from = db.lookup(&lookup_key.node, entry_eq);
+    if (!from) {
         return std::nullopt;
     }
 
-    if (std::chrono::steady_clock::now() > it->second.expiresAt) {
-        // Skip, handle by background worker
+    CacheEntry* entry = reinterpret_cast<CacheEntry*>(*from);
+
+    // Lazy Eviction Check
+    if (entry->expiration.has_value() && entry->expiration.value() <= std::chrono::steady_clock::now()) {
+        HNode* detached_node = db.detach(&lookup_key.node, entry_eq);
+        delete reinterpret_cast<CacheEntry*>(detached_node);
         return std::nullopt;
     }
 
-    return it->second.value;
+    return entry->value;
 }
 
-void KeyValueStore::prune() {
-    std::unique_lock<std::shared_mutex> lock(store_mtx);
-    auto now = std::chrono::steady_clock::now();
+bool KeyValueStore::remove(const std::string& key) {
+    CacheEntry lookup_key;
+    lookup_key.key = key;
+    lookup_key.node.hcode = str_hash(key);
 
-    while (!pq.empty() && pq.top().expiry <= now) {
-        const auto& node = pq.top();
-        auto it = store.find(node.key);
-
-        if (it != store.end() && it->second.expiresAt <= now) {
-            store.erase(it);
-        }
-
-        pq.pop();
+    HNode* detached_node = db.detach(&lookup_key.node, entry_eq);
+    if (detached_node) {
+        delete reinterpret_cast<CacheEntry*>(detached_node);
+        return true;
     }
+    return false;
 }

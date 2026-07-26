@@ -3,8 +3,8 @@ a simple recreation of redis in C++
 
 
 
-Phase 3
+Phase 4
 
-- RESP parser
-- command dispatcher
-- clock: more precise janitor/ wait_until
+- complete RESP2
+- connection timeout
+- add config to kvstore

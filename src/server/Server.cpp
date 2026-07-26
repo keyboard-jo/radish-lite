@@ -80,6 +80,8 @@ asio::awaitable<void> Server::handle_client(tcp::socket socket) {
 
                 RespValue request = std::move(*result.value);
 
+                print_resp(request);
+
                 std::string response = dispatcher_.dispatch(request);
 
                 co_await asio::async_write(

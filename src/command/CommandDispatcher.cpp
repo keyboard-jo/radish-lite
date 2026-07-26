@@ -58,7 +58,8 @@ void CommandDispatcher::register_commands() {
 
         const std::string& key = args[0].string;
         const std::string& val = args[1].string;
-        int ttlSeconds = KeyValueStore::NO_EXPIRE;
+        
+        std::optional<std::chrono::milliseconds> ttl = std::nullopt;
 
         if (args.size() > 2) {
             if (args.size() != 4) {
@@ -70,15 +71,11 @@ void CommandDispatcher::register_commands() {
             std::string option = to_upper(args[2].string);
             if (option == "EX") {
                 std::string_view ttl_str = args[3].string;
-                int parsed_ttl = 0;
+                int64_t parsed_ttl = 0;
 
                 auto [ptr, ec] = std::from_chars(ttl_str.data(), ttl_str.data() + ttl_str.size(), parsed_ttl);
 
-                if (ec == std::errc::result_out_of_range) {
-                    return std::string("-ERR value is not an integer or out of range\r\n");
-                }
-
-                if (ec != std::errc() || ptr != ttl_str.data() + ttl_str.size()) {
+                if (ec == std::errc::result_out_of_range || ec != std::errc() || ptr != ttl_str.data() + ttl_str.size()) {
                     return std::string("-ERR value is not an integer or out of range\r\n");
                 }
 
@@ -86,13 +83,14 @@ void CommandDispatcher::register_commands() {
                     return std::string("-ERR invalid expire time in 'set' command\r\n");
                 }
 
-                ttlSeconds = parsed_ttl;
+                // Convert parsed seconds to milliseconds
+                ttl = std::chrono::seconds(parsed_ttl);
             } else {
                 return std::string("-ERR syntax error\r\n");
             }
         }
 
-        store_.set(key, val, ttlSeconds);
+        store_.set(key, val, ttl);
         return std::string("+OK\r\n");
     };
 
