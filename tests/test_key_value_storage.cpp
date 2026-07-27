@@ -26,13 +26,42 @@ TEST_CASE("KeyValueStore basic operations", "[kvstore]") {
         REQUIRE(store.get("color") == "green");
     }
 
-    SECTION("Remove keys") {
+    SECTION("Remove keys (single and batch)") {
         store.set("key1", "val1", std::nullopt);
-        REQUIRE(store.get("key1") == "val1");
+        store.set("key2", "val2", std::nullopt);
+        store.set("key3", "val3", std::nullopt);
 
-        REQUIRE(store.remove("key1") == true);
+        REQUIRE(store.get("key1") == "val1");
+        REQUIRE(store.get("key2") == "val2");
+        REQUIRE(store.get("key3") == "val3");
+
+        // Test batch removal with a mix of existing and non-existing keys
+        std::vector<std::string_view> batch_to_remove = {"key1", "key2", "nonexistent"};
+        REQUIRE(store.remove_batch(batch_to_remove) == 2);
+
+        // Verify they are actually gone
         REQUIRE(store.get("key1") == std::nullopt);
-        REQUIRE(store.remove("key1") == false);
+        REQUIRE(store.get("get2") == std::nullopt);
+        
+        // key3 should still exist
+        REQUIRE(store.get("key3") == "val3");
+        
+        // Clean up remaining key
+        REQUIRE(store.remove("key3") == true);
+        REQUIRE(store.remove("key3") == false);
+    }
+
+    SECTION("Check keys exist (single and batch)") {
+        store.set("key1", "val1", std::nullopt);
+        store.set("key2", "val2", std::nullopt);
+
+        REQUIRE(store.exists("key1") == true);
+        REQUIRE(store.exists("key2") == true);
+        REQUIRE(store.exists("nonexistent") == false);
+
+        // Test batch existence check
+        std::vector<std::string_view> batch_to_check = {"key1", "key2", "nonexistent1", "nonexistent2"};
+        REQUIRE(store.exists_batch(batch_to_check) == 2);
     }
 }
 
