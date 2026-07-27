@@ -3,6 +3,8 @@
 #include <cctype>
 #include <charconv>
 
+
+// NOTE: utils function, should move this somewhere
 namespace {
     bool check_arity(size_t actual_size, size_t min_expected, size_t max_expected, std::string& error_response, std::string_view cmd_name) {
         if (actual_size < min_expected || actual_size > max_expected) {
@@ -21,6 +23,30 @@ namespace {
 
         return true;
     }
+
+    std::string resp_int(int64_t val) {
+        char buf[32];
+        buf[0] = ':';
+        auto [ptr, ec] = std::to_chars(buf + 1, buf + sizeof(buf) - 3, val);
+        *ptr++ = '\r';
+        *ptr++ = '\n';
+        return std::string(buf, ptr - buf);
+    }
+
+    std::string resp_bulk(std::string_view str) {
+        char buf[32];
+        buf[0] = '$';
+        auto [ptr, ec] = std::to_chars(buf + 1, buf + sizeof(buf) - 3, str.length());
+        *ptr++ = '\r';
+        *ptr++ = '\n';
+        
+        std::string res;
+        res.reserve((ptr - buf) + str.length() + 2);
+        res.append(buf, ptr - buf);
+        res.append(str);
+        res.append("\r\n");
+        return res;
+    }
 }
 
 static std::string to_upper(std::string_view str) {
@@ -36,6 +62,7 @@ CommandDispatcher::CommandDispatcher(KeyValueStore& store) : store_(store) {
     register_commands();
 }
 
+// TODO: optimize return value. maybe use to_chars, find out if args still lives after dispatch is done.
 void CommandDispatcher::register_commands() {
     registry_["PING"] = [this](const std::vector<RespValue>& args) {
         std::string err;
@@ -43,8 +70,7 @@ void CommandDispatcher::register_commands() {
 
         if (!args.empty()) {
             if (!ensure_string_arg(args[0], err)) return err;
-            const std::string& msg = args[0].string;
-            return "$" + std::to_string(msg.length()) + "\r\n" + msg + "\r\n";
+            return resp_bulk(args[0].string);
         }
 
         return std::string("+PONG\r\n");
@@ -58,7 +84,7 @@ void CommandDispatcher::register_commands() {
 
         const std::string& key = args[0].string;
         const std::string& val = args[1].string;
-        
+       
         std::optional<std::chrono::milliseconds> ttl = std::nullopt;
 
         if (args.size() > 2) {
@@ -83,7 +109,6 @@ void CommandDispatcher::register_commands() {
                     return std::string("-ERR invalid expire time in 'set' command\r\n");
                 }
 
-                // Convert parsed seconds to milliseconds
                 ttl = std::chrono::seconds(parsed_ttl);
             } else {
                 return std::string("-ERR syntax error\r\n");
@@ -104,10 +129,54 @@ void CommandDispatcher::register_commands() {
 
         auto val = store_.get(key);
         if (val.has_value()) {
-            return "$" + std::to_string(val->length()) + "\r\n" + *val + "\r\n";
+            return resp_bulk(*val);
         } else {
             return std::string("$-1\r\n");
         }
+    };
+
+    registry_["DEL"] = [this](const std::vector<RespValue>& args) {
+        std::string err;
+        if (!check_arity(args.size(), 1, SIZE_MAX, err, "del")) return err;
+
+        if (args.size() == 1) {
+            if (!ensure_string_arg(args[0], err)) return err;
+            int64_t deleted = store_.remove(args[0].string) ? 1 : 0;
+            return resp_int(deleted);
+        }
+
+        std::vector<std::string_view> keys;
+        keys.reserve(args.size());
+
+        for (const auto& arg : args) {
+            if (!ensure_string_arg(arg, err)) return err;
+            keys.push_back(arg.string);
+        }
+
+        int64_t deleted_count = store_.remove_batch(keys);
+        return resp_int(deleted_count);
+    };
+
+    registry_["EXISTS"] = [this](const std::vector<RespValue>& args) {
+        std::string err;
+        if (!check_arity(args.size(), 1, SIZE_MAX, err, "exists")) return err;
+
+        if (args.size() == 1) {
+            if (!ensure_string_arg(args[0], err)) return err;
+            int64_t count = store_.exists(args[0].string) ? 1 : 0;
+            return resp_int(count);
+        }
+
+        std::vector<std::string_view> keys;
+        keys.reserve(args.size());
+
+        for (const auto& arg: args) {
+            if (!ensure_string_arg(arg, err)) return err;
+            keys.push_back(arg.string);
+        }
+
+        int64_t existing_count = store_.exists_batch(keys);
+        return resp_int(existing_count);
     };
 }
 

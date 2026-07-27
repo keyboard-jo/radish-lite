@@ -118,15 +118,51 @@ std::optional<std::string> KeyValueStore::get(const std::string& key) {
     return entry->value;
 }
 
-bool KeyValueStore::remove(const std::string& key) {
-    CacheEntry lookup_key;
+
+bool KeyValueStore::remove(std::string_view key) {
+    LookupEntry lookup_key;
     lookup_key.key = key;
     lookup_key.node.hcode = str_hash(key);
 
-    HNode* detached_node = db.detach(&lookup_key.node, entry_eq);
+    // Use lookup_eq instead of entry_eq
+    HNode* detached_node = db.detach(&lookup_key.node, lookup_eq);
     if (detached_node) {
         delete reinterpret_cast<CacheEntry*>(detached_node);
         return true;
     }
     return false;
+}
+
+// TODO: Defer large deletion to background worker to free memory
+// NOTE: Might block the server if there are many keys
+int64_t KeyValueStore::remove_batch(const std::vector<std::string_view>& keys) {
+    int64_t deleted_count = 0;
+
+    for (std::string_view key : keys) {
+        if (remove(key)) {
+            deleted_count++;
+        }
+    }
+    return deleted_count;
+}
+
+bool KeyValueStore::exists(std::string_view key) {
+    LookupEntry lookup_key;
+    lookup_key.key = key;
+    lookup_key.node.hcode = str_hash(key);
+
+    // Use lookup_eq instead of entry_eq
+    return db.lookup(&lookup_key.node, lookup_eq) != nullptr;
+}
+
+int64_t KeyValueStore::exists_batch(const std::vector<std::string_view>& keys) {
+    int64_t existing_count = 0;
+
+    for (std::string_view key : keys) {
+        if (exists(key)) {
+            existing_count++;
+        }
+    }
+
+    return existing_count;
 }

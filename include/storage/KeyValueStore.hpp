@@ -9,6 +9,14 @@
 #include <cassert>
 #include <cstdlib>
 
+
+namespace KVConfig {
+    constexpr size_t kMaxLoadFactor = 8;
+    constexpr size_t kRehashingWork = 128;
+    constexpr uint64_t kFnvOffsetBasis = 0xcbf29ce484222325;
+    constexpr uint64_t kFnvPrime = 0x100000001b3;
+}
+
 struct HNode {
     HNode* next = nullptr;
     uint64_t hcode = 0;
@@ -27,14 +35,26 @@ inline bool entry_eq(HNode* lhs, HNode* rhs) {
     return le->key == re->key;
 }
 
-inline uint64_t str_hash(const std::string& data) {
-    uint64_t hash = 0xcbf29ce484222325;
+inline uint64_t str_hash(std::string_view data) {
+    uint64_t hash = KVConfig::kFnvOffsetBasis;
     for (char c : data) {
         hash ^= static_cast<uint8_t>(c);
-        hash *= 0x100000001b3;
+        hash *= KVConfig::kFnvPrime;
     }
 
     return hash;
+}
+
+
+struct LookupEntry {
+    HNode node;
+    std::string_view key;
+};
+
+inline bool lookup_eq(HNode* lhs, HNode* rhs) {
+    CacheEntry* le = reinterpret_cast<CacheEntry*>(lhs);
+    LookupEntry* re = reinterpret_cast<LookupEntry*>(rhs);
+    return le->key == re->key;
 }
 
 struct HTab
@@ -91,12 +111,9 @@ struct HMap {
     HTab older;
     size_t migrate_pos;
 
-    static constexpr size_t k_max_load_factor = 8;
-    static constexpr size_t k_rehashing_work = 128;
-
     void help_rehashing() {
         size_t nwork = 0;
-        while (nwork < k_rehashing_work && older.size > 0) {
+        while (nwork < KVConfig::kRehashingWork && older.size > 0) {
             HNode** from = &older.tab[migrate_pos];
             if (!*from) {
                 migrate_pos++;
@@ -125,7 +142,7 @@ struct HMap {
         }
 
         if(!older.tab) {
-            size_t threshold = (newer.mask + 1) * k_max_load_factor;
+            size_t threshold = (newer.mask + 1) * KVConfig::kMaxLoadFactor;
             if (newer.size >= threshold) {
                 trigger_rehashing();
             }
@@ -183,5 +200,8 @@ public:
 
     void set(const std::string& key, const std::string& value, std::optional<std::chrono::milliseconds> ttl);
     std::optional<std::string> get(const std::string& key);
-    bool remove(const std::string& key);
+    bool remove(std::string_view key);
+    int64_t remove_batch(const std::vector<std::string_view>& keys);
+    bool exists(std::string_view key);
+    int64_t exists_batch(const std::vector<std::string_view>& keys);
 };
